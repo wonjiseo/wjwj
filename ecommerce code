@@ -1,0 +1,219 @@
+###search2 data EDA
+
+len(data['KWD_NM'].unique())  #unique한 검색어의 수 return
+counts=data['KWD_NM'].value_counts().to_frame() #각각의 검색어가 몇번 검색되었는지 return
+counts_data=counts.drop('실패검색',axis=0) #불필요한 검색어 drop(실패검색, 22주년 축하해 등 유의미하지 않은 검색어)
+
+###search1 data DEA
+search['TOT_SESS_HR_V'] = search['TOT_SESS_HR_V'].str.replace(',', '') #data가 str 형이고, ,가 있어서 그것을 제거
+search[['TOT_PAG_VIEW_CT','TOT_SESS_HR_V']]=search[['TOT_PAG_VIEW_CT','TOT_SESS_HR_V']].astype(float) #float 형으로 맞춰주기
+
+
+###pickle file load
+import pickle
+with open('C:/Users/82107/Documents/2019_2/GH/raw.pickle', 'rb') as raw : 
+    raw = pickle.load(raw)
+date=raw.SESS_DT.astype(str)
+day=date.str[-2:] #day의 데이터가 이상해서 orginal SESS_DT 값에서 day만 가져와 수정해주기
+    
+###making x variable for modeling
+1. average purchase price for each user
+total_buy = raw.groupby(['CLNT_ID'])['PD_BUY_AM_sum'].sum().reset_index() #구매액 groupby해서 client 별로 합치기
+total_number=raw.groupby(['CLNT_ID'])['PD_BUY_CT_sum'].sum().reset_index() #구매수량 groupby해서 client 별로 합치기
+total_buy['avg_buy']=total_buy['PD_BUY_AM_sum']/total_number['PD_BUY_CT_sum'].round() #평균 구매액 column 만들기
+buy_again = raw.groupby(['CLNT_ID'])['y'].mean().reset_index() #client 별 재구매일 수의 평균 column 만들기
+import matplotlib.pyplot as plt
+plt.scatter(total_buy['avg_buy'],buy_again['y']) #두 변수 사이의 관계 보기(plotting)
+total_buy=pd.merge(total_buy,buy_again)
+total_buy.corr() #변수 간의 상관계수 확인하기
+
+2. device, age range, average purchase price
+device_buy_mean= raw.groupby(['DVC_CTG_NM'])['PD_BUY_AM_sum'].mean().reset_index() #기기별로 구매액 평균 구하기
+device_age_mean= raw.groupby(['DVC_CTG_NM'])['CLNT_AGE'].mean().reset_index() #기기별로 client 나이 평균 구하기(그런데 여기서는 연령대로 나와있으므로 정확하지 않음
+con1=raw.CLNT_AGE<40
+device_buy=raw[con1][['DVC_CTG_NM','PD_BUY_AM_sum']] #이런식으로 condition에 맞는 값만 선택해서 볼 수 있다. 
+device_buy_mean_under_40=device_buy.groupby(['DVC_CTG_NM'])['PD_BUY_AM_sum'].mean().reset_index() #10,20,30대에 대해서만 기기별 구매액 평균 비교
+
+3. MUP_PAG_VIEW
+search['MUL_PAG_VIEW']=search['TOT_SESS_HR_V']*search['SESS_SEQ'].round() #MUL_PAG_VIEW라는 새로운 column을 만든다
+cut_point = search["MUL_PAG_VIEW"].quantile(0.99) # 상위 99% 값을 cut_point로 지정
+df_cut=search[search['MUL_PAG_VIEW'] < cut_point] #상위 1%의 outlier를 빼고 plotting을 그려보기 위함
+mul_pag_view.to_csv("mul_pag_view_rev.csv",mode="w") # 그항목만 csv 파일로 따로 저장한다.
+
+4. number of days each category was purchased
+days_for_cat2=product.groupby('CLAC2_NM')['SESS_DT'].nunique().to_frame() #unique한 SESS_DT 값이 찍힌 수를 CLAC2_NM 별로 return
+days_for_cat2['SESS_DT']=days_for_cat2['SESS_DT']/183 #총 일수로 나누어주어 ratio로 변환, 1 값이 많아 사용하지 않음
+
+5. how many category 2 each client bought throughout 4 months
+product = product.sort_values(by=['CLNT_ID','SESS_ID'], axis=0, ascending=[True, False]) #product data를 CLNT_ID와 SESS_ID로 sorting
+master= master.sort_values(by='PD_C',ascending=True) #master data도 PD_C로 sorting
+product_dummy =product.merge(master,on='PD_C',how='left') #그래서 그 둘을 합쳤다.
+clac2_list=list(product_dummy['CLAC2_NM'].unique()) #dummy 변수 만들기 unique한 CLAC2_NM 값 별로
+clac2_list.sort()
+CLAC2_NM_dict=dict(zip(clac2_list,range(0,128)))
+product_dummy=product_dummy.replace({"CLAC2_NM": CLAC2_NM_dict}) #각 CLAC2_NM에 있는 중분류 이름을 CLAC2_NM_dict에 있는 숫자로 replace
+product_dummy = pd.concat([product_dummy, pd.get_dummies(product_dummy['CLAC2_NM'])], axis=1) #그 숫자 값들을 one hot encoding해서 나타낸다.
+for i in range(0,128):
+    result=product_dummy.groupby(['CLNT_ID','SESS_ID'])[i].max().reset_index()
+    product_dummy_agg=pd.merge(product_dummy_agg,result)
+#groupby -> dataframe 
+product_dummy_agg=pd.DataFrame(product_dummy_agg)
+product_dummy_agg = product_dummy_agg.reset_index()  #각 client가 구매한 이력이 있는 중분류에 1 표기
+product_dummy_agg['diff_cat2']=0
+for i in range(0,128):
+    a=str(i)+'_y'
+    product_dummy_agg['diff_cat2']=product_dummy_agg['diff_cat2']+product_dummy_agg[a] #그 수를 합쳐서 구매한 중분류의 수로 정리
+    
+6. 비회원 회원
+CLNT_INFO['MEM']=CLNT_INFO['CLNT_GENDER'].map({0:1,1:1,'NaN':0}) #gender 정보가 0이나 1로 나타나면 회원이니까 1, 결측치면 비회원이니까 0으로 mapping
+
+###y 값 categorization
+df= pd.DataFrame(df, columns=['CLNT_ID','SESS_ID','SESS_SEQ','TOT_PAG_VIEW_CT','TOT_SESS_HR_V','DVC_CTG_NM','ZON_NM','MONTH','DAY','CLNT_GENDER','CLNT_AGE','TOT_AM_sum','TOT_AM_mean','PD_BUY_CT_sum','PD_BUY_CT_mean','PD_BUY_AM_sum','PD_BUY_AM_mean','RANK','April','May','June','July','August','September','purchase_CT','MUL_PAG_VIEW','BUY_DIFF_CAT','SEARCH_DIFF_CAT','POWERFUL','y_past','y'])
+df['y'] = df['y'].apply(lambda x:1 if x>=6 else (float('nan') if math.isnan(x)==True else 0))  
+#재구매일수가 6이상이면 1,6일 미만이면 0
+
+df.loc[(df['SESS_DT']<'2018-09-24')&(df['y'].isnull()),'y']=1 #9월 24일 이전에 구매를 했는데 재구매기록이 없으면 재구매일수가 무조건 6일 이상-1로 대체
+
+###결측치 처리
+df['y_past']=df['y_past'].fillna(df['y_past'].median()) #median으로 대체
+
+
+###one hot encoding
+x = pd.get_dummies(df[['CLNT_GENDER','CLNT_AGE','DVC_CTG_NM','ZON_NM']])
+core_cols = df[['CLNT_ID', 'SESS_ID', 'SESS_SEQ', 'TOT_PAG_VIEW_CT', 'TOT_SESS_HR_V', 'MONTH', 'DAY', 'y', 'TOT_AM_sum', 'TOT_AM_mean', 'PD_BUY_CT_sum',
+ 'PD_BUY_CT_mean', 'PD_BUY_AM_sum',  'PD_BUY_AM_mean', 'RANK',  'April', 'May',  'June',  'July',  'August',  'September',  'purchase_CT', 'MUL_PAG_VIEW',
+ 'BUY_DIFF_CAT',  'POWERFUL','y_past']]
+combined = core_cols.merge(x, left_index=True, right_index=True, how='left').reset_index()
+combined.head()
+
+###Normalization
+final['TOT_PAG_VIEW_CT'].hist() #histogram으로 분포를 확인한다.
+final['TOT_PAG_VIEW_CT'].describe() #평균, 4분위수 등을 확인한다.
+final['TOT_PAG_VIEW_CT']=final['TOT_PAG_VIEW_CT']**(1/3) #right-skewness 줄이는 transformation
+
+df2=final[['MUL_PAG_VIEW','POWERFUL']]
+scaler = preprocessing.RobustScaler(quantile_range=(25.0, 75.0))
+scaled_df2 = scaler.fit_transform(df2)
+##.fit_transform: 이 정규화를 df2 전체에 적용해야 하는데 이러한 transformation을 전체 dataset에 적용하고 바뀐 값을 반환하는 것
+final[['MUL_PAG_VIEW','POWERFUL']] = pd.DataFrame(scaled_df2, columns=['MUL_PAG_VIEW','POWERFUL']) #이런식으로 Scaling
+
+fig, (ax1, ax2) = plt.subplots(ncols=2, figsize=(12, 10))
+ax1.set_title('Before Scaling')
+sns.kdeplot(original['MUL_PAG_VIEW'], ax=ax1)
+sns.kdeplot(original['POWERFUL'], ax=ax1)
+ax2.set_title('After Robust Scaling & Cube Transformation')
+sns.kdeplot(final['MUL_PAG_VIEW'], ax=ax2)
+sns.kdeplot(final['POWERFUL'], ax=ax2)
+plt.show()  #transformation,scaling 전후 비교 그래프 그려볼 수 있다.
+
+###modeling
+from sklearn.model_selection import train_test_split
+X_train,train_set,Y_train, test_set = train_test_split(df[['SESS_SEQ', 'TOT_PAG_VIEW_CT',
+       'TOT_SESS_HR_V', 'MONTH', 'DAY', 'TOT_AM_sum', 'TOT_AM_mean',
+       'PD_BUY_CT_sum', 'PD_BUY_CT_mean', 'PD_BUY_AM_sum',
+       'PD_BUY_AM_mean', 'RANK', 'April', 'May', 'June', 'July', 'August',
+       'September', 'purchase_CT', 'MUL_PAG_VIEW', 'POWERFUL', 'y_past', 'CLNT_GENDER_0','SEARCH_DIFF_CAT','CLNT_GENDER_F',
+       'CLNT_GENDER_M', 'CLNT_AGE_0.0', 'CLNT_AGE_10.0', 'CLNT_AGE_20.0',
+       'CLNT_AGE_30.0', 'CLNT_AGE_40.0', 'CLNT_AGE_50.0', 'CLNT_AGE_60.0',
+       'CLNT_AGE_70.0', 'CLNT_AGE_80.0', 'DVC_CTG_NM_desktop',
+       'DVC_CTG_NM_mobile', 'DVC_CTG_NM_tablet']], df['Y'],test_size=0.3, random_state=42) #train, test set split
+       
+from sklearn import datasets
+1. RandomForest
+from sklearn.ensemble import RandomForestClassifier
+import random
+random_seed = random.randint(0,1000)
+rf = RandomForestClassifier(n_estimators=100, oob_score=True, random_state=random_seed)  #이게 머신러닝하는 코드
+prediction = rf.predict(train_set) #학습된 모델로 분류 예측
+
+2. xgboost
+import xgboost as xgb
+D_train = xgb.DMatrix(X_train, label=Y_train)
+D_test = xgb.DMatrix(train_set, label=test_set)
+param = {
+    'eta': 0.3, 
+    'max_depth': 3,  
+    'objective': 'multi:softprob',  
+    'num_class': 3} 
+
+steps = 20 
+model = xgb.train(param, D_train, steps)
+import numpy as np
+from sklearn.metrics import precision_score, recall_score, accuracy_score
+
+preds = model.predict(D_test)
+best_preds = np.asarray([np.argmax(line) for line in preds])
+
+print("Precision = {}".format(precision_score(test_set, best_preds, average='macro')))
+print("Recall = {}".format(recall_score(test_set, best_preds, average='macro')))
+print("Accuracy = {}".format(accuracy_score(test_set, best_preds)))
+
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
+cm = pd.DataFrame(confusion_matrix(test_set, best_preds), columns=['Uner6', 'Over6'], index=['Under6', 'Over6'])
+sns.heatmap(cm, annot=True, fmt='d')
+
+3. SVC
+from sklearn.svm import LinearSVC
+svc = LinearSVC()
+svc.fit(X_train, Y_train)
+y_pred = svc.predict(train_set)
+print("Precision = {}".format(precision_score(test_set, y_pred, average='macro')))
+print("Recall = {}".format(recall_score(test_set, y_pred, average='macro')))
+print("Accuracy = {}".format(accuracy_score(test_set, y_pred)))
+
+4. Ababoost Classifier
+from sklearn.ensemble import AdaBoostClassifier
+classifier = AdaBoostClassifier(
+    DecisionTreeClassifier(max_depth=1),
+    n_estimators=200
+)
+classifier.fit(X_train, Y_train)
+predictions = classifier.predict(train_set)
+
+5. Deep Learning
+from keras.models import Sequential
+
+# Import `Dense` from `keras.layers`
+from keras.layers import Dense
+
+# Initialize the constructor
+model = Sequential()
+
+# Add an input layer 
+model.add(Dense(12, activation='relu', input_shape=(38,)))
+
+# Add one hidden layer 
+model.add(Dense(8, activation='relu'))
+
+# Add an output layer 
+model.add(Dense(1, activation='sigmoid'))
+
+model.compile(loss='binary_crossentropy',
+              optimizer='adam',
+              metrics=['accuracy'])
+                   
+model.fit(X_train, Y_train,epochs=20, batch_size=1, verbose=1)
+
+6. Gaussian NB
+from sklearn.naive_bayes import GaussianNB
+gnb = GaussianNB()
+gnb.fit(X_train, Y_train)
+
+7. Kneighbors Classifier
+from sklearn.neighbors import KNeighborsClassifier
+k_range=range(1,26)
+scores={}
+scores_list=[]
+for k in k_range:
+    knn=KNeighborsClassifier(n_neighbors=k)
+    knn.fit(X_train, Y_train)
+    y_pred=knn.predict(train_set)
+    scores[k]=metrics.accuracy_score(test_set,y_pred)
+    scores_list.append(metrics.accuracy_score(test_set,y_pred))
+    
+import matplotlib.pyplot as plt
+
+plt.plot(k_range,scores_list) #이 그래프를 통해 적절한 k값을 고르면 된다.
+
+
